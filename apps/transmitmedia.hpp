@@ -18,6 +18,10 @@
 #include "transmitbase.hpp"
 #include <udt.h> // Needs access to CUDTException
 
+// NDI SDK.
+// #include <Processing.NDI.Lib.h>
+#include <Processing.NDI.Advanced.h>
+
 using namespace std;
 
 // Trial version of an exception. Try to implement later an official

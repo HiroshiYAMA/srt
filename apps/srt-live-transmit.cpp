@@ -360,6 +360,12 @@ int parse_args(LiveTransmitConfig &cfg, int argc, char** argv)
 
 int main(int argc, char** argv)
 {
+    if (!NDIlib_initialize())
+    {
+        std::cerr << "Cannot run NDI." << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
     srt_startup();
     // This is mainly required on Windows to initialize the network system,
     // for a case when the instance would use UDP. SRT does it on its own, independently.
@@ -589,8 +595,8 @@ int main(int argc, char** argv)
             SYSSOCKET sysrfds[2];
             if (srt_epoll_wait(pollid,
                 &srtrwfds[0], &srtrfdslen, &srtrwfds[2], &srtwfdslen,
-                100,
-                &sysrfds[0], &sysrfdslen, 0, 0) >= 0)
+                1,  // time out : 1 msec.
+                &sysrfds[0], &sysrfdslen, 0, 0) >= 0 || true)
             {
                 bool doabort = false;
                 for (size_t i = 0; i < sizeof(srtrwfds) / sizeof(SRTSOCKET); i++)
@@ -842,6 +848,9 @@ int main(int argc, char** argv)
         cerr << "ERROR: " << x.what() << endl;
         return 255;
     }
+
+    // Not required, but nice
+    NDIlib_destroy();
 
     return 0;
 }

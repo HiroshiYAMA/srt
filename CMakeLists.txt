@@ -1127,6 +1127,9 @@ macro(srt_make_application name)
 	if (srt_libspec_static AND CMAKE_DL_LIBS)
 		target_link_libraries(${name} ${CMAKE_DL_LIBS})
 	endif()
+
+	# NDI SDK.
+	target_link_libraries(${name} ndi)
 endmacro()
 
 macro(srt_add_application name) # ARGN=sources...
@@ -1164,6 +1167,9 @@ if (ENABLE_APPS)
 	set (VIRTUAL_srtsupport $<TARGET_OBJECTS:srtsupport_virtual>)
 
 	# Applications
+
+	# NDI SDK.
+	include_directories(/usr/local/include/NDI)
 
 	srt_add_application(srt-live-transmit ${VIRTUAL_srtsupport})
 	if (DEFINED EXTRA_stransmit)

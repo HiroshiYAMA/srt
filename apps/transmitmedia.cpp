@@ -1,14 +1,14 @@
 /*
  * SRT - Secure, Reliable, Transport
  * Copyright (c) 2018 Haivision Systems Inc.
- * 
+ *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
- * 
+ *
  */
 
-// Just for formality. This file should be used 
+// Just for formality. This file should be used
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -37,6 +37,8 @@
 #include "srt_compat.h"
 #include "verbose.hpp"
 
+#include <assert.h>
+
 using namespace std;
 
 bool g_stats_are_printed_to_stdout = false;
@@ -44,6 +46,457 @@ bool transmit_total_stats = false;
 unsigned long transmit_bw_report = 0;
 unsigned long transmit_stats_report = 0;
 unsigned long transmit_chunk_size = SRT_LIVE_MAX_PLSIZE;
+
+template<typename T, typename S> void ifsr(std::vector<T> &data, S &val, size_t &pos)
+{
+    if ((pos + sizeof(S)) > data.size()) return;
+
+    S *p = reinterpret_cast<S *>(&data[pos]);
+    val = *p;
+    pos += sizeof(S);
+};
+
+template<typename T, typename S> void ofsw(std::vector<T> &data, S &val)
+{
+    T *p = reinterpret_cast<T *>(&val);
+    for (size_t i = 0; i < sizeof(val); i++) {
+        data.push_back(p[i]);
+    }
+};
+
+enum class em_NDI_TYPE : int8_t
+{
+    Video,
+    Audio,
+    Metadata,
+    GenLock,
+    Tally,
+    Unknown = -1
+};
+
+struct st_NDI_on_SRT_header
+{
+    static constexpr auto MARKER = "NDIonSRT";
+
+    char marker[8];
+    struct st_version
+    {
+        int8_t major;
+        int16_t minor;
+    } version;
+    em_NDI_TYPE ndi_type;    // int8_t.
+    uint32_t frame_count;
+    uint8_t reserved[8];
+    uint64_t ndi_data_size;
+
+    static std::vector<uint8_t> pack(struct st_NDI_on_SRT_header &header)
+    {
+        std::vector<uint8_t> data;
+
+        data.reserve(sizeof(st_NDI_on_SRT_header));
+        data.clear();
+
+        for (size_t i = 0; i < std::size(header.marker); i++) {
+            ofsw(data, header.marker[i]);
+        }
+        ofsw(data, header.version.major);
+        ofsw(data, header.version.minor);
+        ofsw(data, header.ndi_type);
+        ofsw(data, header.frame_count);
+        for (size_t i = 0; i < std::size(header.reserved); i++) {
+            ofsw(data, header.reserved[i]);
+        }
+        ofsw(data, header.ndi_data_size);
+
+        return data;
+    }
+
+    static struct st_NDI_on_SRT_header unpack(std::vector<uint8_t> &data, size_t pos = 0)
+    {
+        st_NDI_on_SRT_header header;
+
+        for (size_t i = 0; i < std::size(header.marker); i++) {
+            ifsr(data, header.marker[i], pos);
+        }
+        ifsr(data, header.version.major, pos);
+        ifsr(data, header.version.minor, pos);
+        ifsr(data, header.ndi_type, pos);
+        ifsr(data, header.frame_count, pos);
+        for (size_t i = 0; i < std::size(header.reserved); i++) {
+            ifsr(data, header.reserved[i], pos);
+        }
+        ifsr(data, header.ndi_data_size, pos);
+
+        return header;
+    }
+};
+
+class NdiSource: public Source
+{
+    NDIlib_recv_create_v3_t recv_desc;
+    NDIlib_recv_instance_t pNDI_recv = nullptr;
+
+    NDIlib_video_frame_v2_t video_frame;
+    NDIlib_audio_frame_v3_t audio_frame;
+    NDIlib_metadata_frame_t metadata_frame;
+
+    bool is_received = false;
+    bool is_sent_header = false;
+    st_NDI_on_SRT_header header;
+    int idx_in = 0;
+    int idx_out = 1;
+    std::vector<uint8_t> ndi_data[2];
+    size_t pos_to_send;
+
+    uint32_t frame_count = 0;
+
+    bool eof = false;
+
+public:
+
+    NdiSource(const string& machine_name, const string& ndi_source_name)
+    {
+        // MACHINE_NAME (NDI_SOURCE_NAME)
+        auto idx = ndi_source_name.find("/");
+        std::string str_sn;
+        if (idx != string::npos) {
+            str_sn = ndi_source_name.substr(idx + 1, ndi_source_name.size() - idx);
+        } else {
+            str_sn = ndi_source_name;
+        }
+        std::string ndi_name = machine_name + " " + "(" + str_sn + ")";
+
+        NDIlib_source_t ndi_src;
+        ndi_src.p_ndi_name = ndi_name.c_str();
+
+        // We now have at least one source, so we create a receiver to look at it.
+        recv_desc.source_to_connect_to = ndi_src;
+        recv_desc.color_format = (NDIlib_recv_color_format_e)NDIlib_recv_color_format_compressed_v5;
+        pNDI_recv = NDIlib_recv_create_v3(&recv_desc);
+        if (!pNDI_recv) {
+            throw std::runtime_error(ndi_name + ": Can't create & connect NDI recciver");
+        }
+    }
+
+    ~NdiSource() override
+    {
+        for (auto i = 0; i < 2; i++) {
+            ndi_data[i].clear();
+            ndi_data[i].shrink_to_fit();
+        }
+
+        // Destroy the receiver
+        NDIlib_recv_destroy(pNDI_recv);
+    }
+
+    int Read(size_t chunk, MediaPacket& pkt, ostream & ignored SRT_ATR_UNUSED = cout) override
+    {
+        while (!is_received) {
+            switch (NDIlib_recv_capture_v3(pNDI_recv, &video_frame, &audio_frame, &metadata_frame, 5)) {
+            // No data
+            case NDIlib_frame_type_none:
+                break;
+
+            // Video data
+            case NDIlib_frame_type_video:
+                {
+                    auto &data = ndi_data[idx_in];
+                    data.clear();
+                    ofsw(data, video_frame.xres);
+                    ofsw(data, video_frame.yres);
+                    ofsw(data, video_frame.FourCC);
+                    ofsw(data, video_frame.frame_rate_N);
+                    ofsw(data, video_frame.frame_rate_D);
+                    ofsw(data, video_frame.picture_aspect_ratio);
+                    ofsw(data, video_frame.frame_format_type);
+                    ofsw(data, video_frame.timecode);
+                    ofsw(data, video_frame.data_size_in_bytes);
+                    ofsw(data, video_frame.timestamp);
+
+                    // metadata.
+                    if (video_frame.p_metadata != nullptr) {
+                        auto len = strlen(video_frame.p_metadata);
+                        data.resize(data.size() + len);
+                        memcpy(&data[data.size() - len], video_frame.p_metadata, len);
+                    }
+                    // add null charactor.
+                    {
+                        char c = '\0';
+                        ofsw(data, c);
+                    }
+
+                    // data.
+                    if (video_frame.p_data != nullptr) {
+                        auto sz = video_frame.data_size_in_bytes;
+                        data.resize(data.size() + sz);
+                        memcpy(&data[data.size() - sz], video_frame.p_data, sz);
+                    }
+
+                    // Free the memory
+                    NDIlib_recv_free_video_v2(pNDI_recv, &video_frame);
+
+                    // update header.
+                    memcpy(header.marker, st_NDI_on_SRT_header::MARKER, std::size(header.marker));
+                    header.version.major = 0;
+                    header.version.minor = 0;
+                    header.ndi_type = em_NDI_TYPE::Video;
+                    header.frame_count = frame_count; frame_count++;
+                    memset(header.reserved, 0, std::size(header.reserved));
+                    header.ndi_data_size = data.size();
+
+                    // update index.
+                    idx_out = idx_in;
+                    idx_in = (idx_in + 1) % 2;
+
+                    is_received = true;
+                    is_sent_header = false;
+                    pos_to_send = 0;
+                }
+                break;
+
+            // Audio data
+            case NDIlib_frame_type_audio:
+                NDIlib_recv_free_audio_v3(pNDI_recv, &audio_frame);
+                break;
+
+            // Meta data
+            case NDIlib_frame_type_metadata:
+                NDIlib_recv_free_metadata(pNDI_recv, &metadata_frame);
+                break;
+
+            // There is a status change on the receiver (e.g. new web interface)
+            case NDIlib_frame_type_status_change:
+                std::cerr << "Receiver connection status changed." << std::endl;
+                break;
+
+            case NDIlib_frame_type_error:
+                std::cerr << "Receiver connection lost." << std::endl;
+                eof = true;
+                break;
+
+            // Everything else
+            default:
+                break;
+            }
+        }
+
+        // copy payload.
+        size_t sz;
+        if (is_sent_header) {
+            auto &data_size = header.ndi_data_size;
+
+            if (pos_to_send + chunk <= data_size) {
+                sz = chunk;
+            } else {
+                sz = data_size - pos_to_send;
+            }
+            pkt.payload.resize(sz);
+
+            auto &data = ndi_data[idx_out];
+            memcpy(pkt.payload.data(), &data[pos_to_send], sz);
+            pos_to_send += sz;
+
+            if (pos_to_send >= data_size) is_received = false;
+
+        } else {
+            auto packet = st_NDI_on_SRT_header::pack(header);
+
+            sz = packet.size();
+            assert(sz <= chunk);
+            pkt.payload.resize(sz);
+
+            memcpy(pkt.payload.data(), packet.data(), sz);
+
+            is_sent_header = true;
+        }
+
+        pkt.time = srt_time_now();
+
+        if (pkt.payload.empty())
+        {
+            return 0;
+        }
+
+        return (int)sz;
+    }
+
+    bool IsOpen() override { return (pNDI_recv != nullptr); }
+    bool End() override { return eof; }
+};
+
+class NdiTarget: public Target
+{
+    enum class em_WRITE_STATE : int
+    {
+        NONE,
+        RECEIVE_HEADER,
+        RECEIVE_NDI_DATA,
+        SEND_NDI,
+    };
+
+    NDIlib_send_create_t send_desc;
+    NDIlib_send_instance_t pNDI_send = nullptr;
+
+    NDIlib_video_frame_v2_t video_frame;
+    NDIlib_audio_frame_v3_t audio_frame;
+    NDIlib_metadata_frame_t metadata_frame;
+
+    em_WRITE_STATE write_stat = em_WRITE_STATE::NONE;
+    st_NDI_on_SRT_header header;
+    int idx_in = 0;
+    int idx_out = 1;
+    std::vector<uint8_t> ndi_data[2];
+    std::string metadata[2];
+
+    uint32_t frame_count = 0;
+
+    bool eof = false;
+
+public:
+
+    NdiTarget(const string& /* machine_name */, const string& ndi_source_name)
+    {
+        // MACHINE_NAME (NDI_SOURCE_NAME)
+        auto idx = ndi_source_name.find("/");
+        std::string str_sn;
+        if (idx != string::npos) {
+            str_sn = ndi_source_name.substr(idx + 1, ndi_source_name.size() - idx);
+        } else {
+            str_sn = ndi_source_name;
+        }
+
+        send_desc.clock_video = send_desc.clock_audio = false;
+        send_desc.p_ndi_name = str_sn.c_str();
+
+        // We create the NDI sender
+        pNDI_send = NDIlib_send_create(&send_desc);
+        if (!pNDI_send) {
+            throw std::runtime_error(str_sn + ": Can't create & connect NDI sender");
+        }
+    }
+
+    ~NdiTarget() override
+    {
+        for (auto i = 0; i < 2; i++) {
+            ndi_data[i].clear();
+            ndi_data[i].shrink_to_fit();
+
+            metadata[i].clear();
+            metadata[i].shrink_to_fit();
+        }
+
+        // Because one buffer is in flight we need to make sure that there is no chance that we might free it before
+        // NDI is done with it. You can ensure this either by sending another frame, or just by sending a frame with
+        // a NULL pointer.
+        NDIlib_send_send_video_async_v2(pNDI_send, NULL);
+
+        // Destroy the NDI sender
+        NDIlib_send_destroy(pNDI_send);
+    }
+
+    int Write(const char* data, size_t size, int64_t time SRT_ATR_UNUSED, ostream & ignored SRT_ATR_UNUSED = cout) override
+    {
+        std::vector<uint8_t> vec;
+        vec.resize(size);
+        memcpy(vec.data(), data, size);
+
+        bool is_header = (memcmp(vec.data(), st_NDI_on_SRT_header::MARKER, std::size(header.marker)) == 0);
+        if (is_header) {
+            write_stat = em_WRITE_STATE::RECEIVE_HEADER;
+        }
+
+        switch (write_stat) {
+        case em_WRITE_STATE::RECEIVE_HEADER:
+            header = st_NDI_on_SRT_header::unpack(vec);
+            frame_count = header.frame_count;
+            ndi_data[idx_in].clear();
+            metadata[idx_in].clear();
+            write_stat = em_WRITE_STATE::RECEIVE_NDI_DATA;
+            break;
+
+        case em_WRITE_STATE::RECEIVE_NDI_DATA:
+            {
+                auto &dst = ndi_data[idx_in];
+                // dst.insert(dst.end(), vec);
+                dst.resize(dst.size() + size);
+                memcpy(&dst[dst.size() - size], vec.data(), size);
+
+                if (dst.size() >= header.ndi_data_size) {
+                    write_stat = em_WRITE_STATE::SEND_NDI;
+                    idx_out = idx_in;
+                    idx_in = (idx_in + 1) % 2;
+                }
+            }
+            break;
+
+        default:
+            break;
+        }
+
+        if (write_stat == em_WRITE_STATE::SEND_NDI) {
+            switch (header.ndi_type) {
+            case em_NDI_TYPE::Video:
+                {
+                    size_t pos = 0;
+                    auto &data = ndi_data[idx_out];
+                    ifsr(data, video_frame.xres, pos);
+                    ifsr(data, video_frame.yres, pos);
+                    ifsr(data, video_frame.FourCC, pos);
+                    ifsr(data, video_frame.frame_rate_N, pos);
+                    ifsr(data, video_frame.frame_rate_D, pos);
+                    ifsr(data, video_frame.picture_aspect_ratio, pos);
+                    ifsr(data, video_frame.frame_format_type, pos);
+                    ifsr(data, video_frame.timecode, pos);
+                    ifsr(data, video_frame.data_size_in_bytes, pos);
+                    ifsr(data, video_frame.timestamp, pos);
+
+                    // copy metadata.
+                    metadata[idx_out] = std::string((char *)&data[pos]);
+                    pos += (metadata[idx_out].length() + 1);
+                    video_frame.p_metadata = metadata[idx_out].data();
+
+                    // copy data.
+                    video_frame.p_data = &data[pos];
+                    pos += video_frame.data_size_in_bytes;
+
+                    // send.
+                    NDIlib_send_send_video_async_v2(pNDI_send, &video_frame);
+                }
+                break;
+
+            case em_NDI_TYPE::Audio:
+                break;
+
+            case em_NDI_TYPE::Metadata:
+                break;
+
+            case em_NDI_TYPE::GenLock:
+                break;
+
+            case em_NDI_TYPE::Tally:
+                break;
+
+            default:
+                break;
+            }
+
+            write_stat = em_WRITE_STATE::NONE;
+        }
+
+        return (pNDI_send && data ? size : 0);
+    }
+
+    bool IsOpen() override { return true; }
+    bool Broken() override { return true; }
+    void Close() override {}
+};
+
+template <class Iface> struct Ndi;
+template <> struct Ndi<Source> { typedef NdiSource type; };
+template <> struct Ndi<Target> { typedef NdiTarget type; };
+
+template <class Iface>
+Iface* CreateNdi(const string& machine_name, const string& ndi_source_name) { return new typename Ndi<Iface>::type (machine_name, ndi_source_name); }
 
 class FileSource: public Source
 {
@@ -401,7 +854,7 @@ void SrtCommon::ConnectClient(string host, int port)
 {
 
     sockaddr_any sa = CreateAddr(host, port);
-	sockaddr* psa = sa.get();
+    sockaddr* psa = sa.get();
 
     Verb() << "Connecting to " << host << ":" << port;
 
@@ -534,7 +987,7 @@ int SrtSource::Read(size_t chunk, MediaPacket& pkt, ostream &out_stats)
     {
         CBytePerfMon perf;
         srt_bstats(m_sock, &perf, need_stats_report && !transmit_total_stats);
-        if (transmit_stats_writer != nullptr) 
+        if (transmit_stats_writer != nullptr)
         {
             if (need_bw_report)
                 cerr << transmit_stats_writer->WriteBandwidth(perf.mbpsBandwidth) << std::flush;
@@ -1099,6 +1552,14 @@ extern unique_ptr<Base> CreateMedium(const string& uri)
         else
             ptr.reset( CreateFile<Base>(u.path()));
 #endif
+        break;
+
+    case UriParser::NDI:
+        if (u.path() == "") {
+            std::cerr << "Path name is empty." << std::endl;
+            throw invalid_argument("Invalid port number");
+        }
+        ptr.reset(CreateNdi<Base>(u.host(), u.path()));
         break;
 
     case UriParser::SRT:
