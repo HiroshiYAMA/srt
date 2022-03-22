@@ -596,7 +596,9 @@ int main(int argc, char** argv)
             if (srt_epoll_wait(pollid,
                 &srtrwfds[0], &srtrfdslen, &srtrwfds[2], &srtwfdslen,
                 0,  // time out : 0 msec.
-                &sysrfds[0], &sysrfdslen, 0, 0) >= 0 || true)
+                &sysrfds[0], &sysrfdslen, 0, 0) >= 0
+                || src->uri.type() == UriParser::Type::NDI
+                || tar->uri.type() == UriParser::Type::NDI)
             {
                 bool doabort = false;
                 for (size_t i = 0; i < sizeof(srtrwfds) / sizeof(SRTSOCKET); i++)
