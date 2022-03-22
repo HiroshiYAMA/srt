@@ -595,7 +595,7 @@ int main(int argc, char** argv)
             SYSSOCKET sysrfds[2];
             if (srt_epoll_wait(pollid,
                 &srtrwfds[0], &srtrfdslen, &srtrwfds[2], &srtwfdslen,
-                1,  // time out : 1 msec.
+                0,  // time out : 0 msec.
                 &sysrfds[0], &sysrfdslen, 0, 0) >= 0 || true)
             {
                 bool doabort = false;
