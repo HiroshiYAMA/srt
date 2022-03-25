@@ -595,10 +595,9 @@ int main(int argc, char** argv)
             SYSSOCKET sysrfds[2];
             if (srt_epoll_wait(pollid,
                 &srtrwfds[0], &srtrfdslen, &srtrwfds[2], &srtwfdslen,
-                0,  // time out : 0 msec.
+                srcConnected || tarConnected ? 0 : 100,  // time out : 0 msec only connected.
                 &sysrfds[0], &sysrfdslen, 0, 0) >= 0
-                || src->uri.type() == UriParser::Type::NDI
-                || tar->uri.type() == UriParser::Type::NDI)
+                || src->uri.type() == UriParser::Type::NDI)
             {
                 bool doabort = false;
                 for (size_t i = 0; i < sizeof(srtrwfds) / sizeof(SRTSOCKET); i++)
