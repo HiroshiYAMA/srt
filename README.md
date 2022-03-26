@@ -57,6 +57,8 @@ As audio/video packets are streamed from a source to a destination device, SRT d
 For a detailed description of the build system and options, please refer to [SRT Build Options](docs/build/build-options.md).
 
 ### NDI support.
+Consept is [here](docs/apps/SRT_include_NDI.pdf).
+
 #### Requirements
 * [NDI NDI Advanced SDK](https://ndi.tv/sdk/)
 
