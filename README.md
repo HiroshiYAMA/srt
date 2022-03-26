@@ -46,6 +46,7 @@ As audio/video packets are streamed from a source to a destination device, SRT d
 ## Requirements
 
 * C++03 (or above) compliant compiler.
+  * If you want to use NDI, requirement is C++17 (or above).
 * CMake 2.8.12 or above (as build system).
 * OpenSSL 1.1 (to enable encryption, or build with `-DENABLE_ENCRYPTION=OFF`).
 * Multithreading is provided by either of the following:
@@ -54,6 +55,30 @@ As audio/video packets are streamed from a source to a destination device, SRT d
 * Tcl 8.5 (optional, used by `./configure` script or use CMake directly).
 
 For a detailed description of the build system and options, please refer to [SRT Build Options](docs/build/build-options.md).
+
+### NDI support.
+#### Requirements
+* [NDI NDI Advanced SDK](https://ndi.tv/sdk/)
+
+#### Build
+```bash
+mkdir build
+cd build
+cmake -DENABLE_EXAMPLES=1 -DUSE_CXX_STD=17 ..
+make -j<num>
+```
+
+#### Usages
+Listener
+```bash
+# MACHINE_NAME (NDI_SOURCE_NAME)
+srt-live-transmit ndi://MACHINE_NAME/NDI_SOURCE_NAME srt://:<port number>?passphrase='hoge hoge words' -v
+```
+
+Caller
+```bash
+srt-live-transmit srt://<IP address of listener>:<port number>?passphrase='hoge hoge words' ndi:///NDI_SOURCE_NAME2 -v
+```
 
 ### Build on Linux
 
