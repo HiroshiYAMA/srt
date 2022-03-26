@@ -22,6 +22,9 @@
 // #include <Processing.NDI.Lib.h>
 #include <Processing.NDI.Advanced.h>
 
+extern volatile bool int_state_NDI;
+extern volatile bool timer_state_NDI;
+
 using namespace std;
 
 // Trial version of an exception. Try to implement later an official

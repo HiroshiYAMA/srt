@@ -106,6 +106,7 @@ void OnINT_ForceExit(int)
 {
     Verb() << "\n-------- REQUESTED INTERRUPT!\n";
     int_state = true;
+    int_state_NDI = true;
 }
 
 void OnAlarm_Interrupt(int)
@@ -114,6 +115,8 @@ void OnAlarm_Interrupt(int)
 
     int_state = false; // JIC
     timer_state = true;
+    int_state_NDI = false;
+    timer_state_NDI = true;
 
     if ((false))
     {

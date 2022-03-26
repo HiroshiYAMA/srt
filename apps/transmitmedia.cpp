@@ -47,6 +47,9 @@ unsigned long transmit_bw_report = 0;
 unsigned long transmit_stats_report = 0;
 unsigned long transmit_chunk_size = SRT_LIVE_MAX_PLSIZE;
 
+volatile bool int_state_NDI = false;
+volatile bool timer_state_NDI = false;
+
 template<typename T, typename S> void ifsr(std::vector<T> &data, S &val, size_t &pos)
 {
     if ((pos + sizeof(S)) > data.size()) return;
@@ -191,14 +194,18 @@ public:
 
     int Read(size_t chunk, MediaPacket& pkt, ostream & ignored SRT_ATR_UNUSED = cout) override
     {
-        while (!is_received) {
+        // std::cerr << "NDIlib_recv_get_no_connections: " << NDIlib_recv_get_no_connections(pNDI_recv) << std::endl;
+
+        while (!is_received && !int_state_NDI && !timer_state_NDI) {
             switch (NDIlib_recv_capture_v3(pNDI_recv, &video_frame, &audio_frame, &metadata_frame, 5)) {
             // No data
             case NDIlib_frame_type_none:
+                // std::cerr << "[NDI receive] NDIlib_frame_type_none." << std::endl;
                 break;
 
             // Video data
             case NDIlib_frame_type_video:
+                // std::cerr << "[NDI receive] NDIlib_frame_type_video." << std::endl;
                 {
                     auto &data = ndi_data[idx_in];
                     data.clear();
@@ -256,26 +263,31 @@ public:
 
             // Audio data
             case NDIlib_frame_type_audio:
+                // std::cerr << "[NDI receive] NDIlib_frame_type_audio." << std::endl;
                 NDIlib_recv_free_audio_v3(pNDI_recv, &audio_frame);
                 break;
 
             // Meta data
             case NDIlib_frame_type_metadata:
+                // std::cerr << "[NDI receive] NDIlib_frame_type_metadata." << std::endl;
                 NDIlib_recv_free_metadata(pNDI_recv, &metadata_frame);
                 break;
 
             // There is a status change on the receiver (e.g. new web interface)
             case NDIlib_frame_type_status_change:
+                // std::cerr << "[NDI receive] NDIlib_frame_type_status_change." << std::endl;
                 std::cerr << "Receiver connection status changed." << std::endl;
                 break;
 
             case NDIlib_frame_type_error:
+                // std::cerr << "[NDI receive] NDIlib_frame_type_error." << std::endl;
                 std::cerr << "Receiver connection lost." << std::endl;
                 eof = true;
                 break;
 
             // Everything else
             default:
+                // std::cerr << "[NDI receive] Others." << std::endl;
                 break;
             }
         }
