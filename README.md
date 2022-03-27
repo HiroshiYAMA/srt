@@ -56,32 +56,6 @@ As audio/video packets are streamed from a source to a destination device, SRT d
 
 For a detailed description of the build system and options, please refer to [SRT Build Options](docs/build/build-options.md).
 
-### NDI support.
-Consept is [here](docs/apps/SRT_include_NDI.pdf).
-
-#### Requirements
-* [NDI NDI Advanced SDK](https://ndi.tv/sdk/)
-
-#### Build
-```bash
-mkdir build
-cd build
-cmake -DENABLE_EXAMPLES=1 -DUSE_CXX_STD=17 ..
-make -j<num>
-```
-
-#### Usages
-Listener
-```bash
-# MACHINE_NAME (NDI_SOURCE_NAME)
-srt-live-transmit ndi://MACHINE_NAME/NDI_SOURCE_NAME srt://:<port number>?passphrase='hoge hoge words' -v
-```
-
-Caller
-```bash
-srt-live-transmit srt://<IP address of listener>:<port number>?passphrase='hoge hoge words' ndi:///NDI_SOURCE_NAME2 -v
-```
-
 ### Build on Linux
 
 Install cmake and openssl-devel (or similar name) package. For pthreads
@@ -177,3 +151,43 @@ Follow the [Building SRT for Windows](docs/build/build-win.md) instructions.
 
 [debian-badge]: https://badges.debian.net/badges/debian/testing/libsrt1/version.svg
 [debian-package]: https://packages.debian.org/testing/libsrt1
+
+## NDI support.
+Consept is [here](docs/apps/SRT_include_NDI.pdf).
+
+### Requirements
+* [NDI NDI Advanced SDK](https://ndi.tv/sdk/)
+
+### Build
+```bash
+mkdir build
+cd build
+cmake -DENABLE_EXAMPLES=1 -DUSE_CXX_STD=17 ..
+make -j<num>
+```
+
+### Usages
+
+#### **Case 1: Send(Listener) --> Receive(Caller)**
+Send(Listener)
+```bash
+# MACHINE_NAME (NDI_SOURCE_NAME)
+srt-live-transmit ndi://MACHINE_NAME/NDI_SOURCE_NAME srt://:<port number>?passphrase='hoge hoge words' -v
+```
+
+Receive(Caller)
+```bash
+srt-live-transmit srt://<IP address of listener>:<port number>?passphrase='hoge hoge words' ndi:///NDI_SOURCE_NAME2 -v
+```
+
+#### **Case 2: Send(Caller) --> Receive(Listener)**
+Send(Caller)
+```bash
+# MACHINE_NAME (NDI_SOURCE_NAME)
+srt-live-transmit ndi://MACHINE_NAME/NDI_SOURCE_NAME srt://<IP address of listener>:<port number>?passphrase='hoge hoge words' -v
+```
+
+Receive(Listener)
+```bash
+srt-live-transmit srt://:<port number>?passphrase='hoge hoge words' ndi:///NDI_SOURCE_NAME2 -v
+```
