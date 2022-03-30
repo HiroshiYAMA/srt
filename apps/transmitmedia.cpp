@@ -38,6 +38,14 @@
 #include "verbose.hpp"
 
 #include <assert.h>
+#include <algorithm>
+#include <numeric>
+#include <chrono>
+
+#ifdef CHECK_SUM_MODE_CRC32
+#include <crc.h>
+#include <secblock.h>
+#endif
 
 using namespace std;
 
@@ -49,6 +57,29 @@ unsigned long transmit_chunk_size = SRT_LIVE_MAX_PLSIZE;
 
 volatile bool int_state_NDI = false;
 volatile bool timer_state_NDI = false;
+
+static uint64_t calc_checksum(const std::vector<uint8_t> data)
+{
+    uint64_t cs = 0;
+
+    // auto st = std::chrono::steady_clock::now();
+#ifndef CHECK_SUM_MODE_CRC32
+    cs = std::accumulate(data.begin(), data.end(), 0);
+#else
+    CryptoPP::CRC32 crc;
+    CryptoPP::SecByteBlock digest(crc.DigestSize());
+    crc.Update(data.data(), data.size());
+    crc.Final(digest);
+    for (size_t i = 0; i < std::min(digest.size(), size_t(4)); i++) {
+        cs = (cs << 8) + digest[i];
+    }
+#endif
+    // auto et = std::chrono::steady_clock::now();
+    // auto dt = std::chrono::duration_cast<std::chrono::nanoseconds>(et - st);
+    // std::cerr << "TIME(CHECK SUM) = " << dt.count() / 1000.0f << "(usec)" << std::endl;
+
+    return cs;
+}
 
 template<typename T, typename S> void ifsr(std::vector<T> &data, S &val, size_t &pos)
 {
@@ -91,6 +122,7 @@ struct st_NDI_on_SRT_header
     uint32_t frame_count;
     uint8_t reserved[8];
     uint64_t ndi_data_size;
+    uint64_t check_sum;
 
     static std::vector<uint8_t> pack(struct st_NDI_on_SRT_header &header)
     {
@@ -110,6 +142,7 @@ struct st_NDI_on_SRT_header
             ofsw(data, header.reserved[i]);
         }
         ofsw(data, header.ndi_data_size);
+        ofsw(data, header.check_sum);
 
         return data;
     }
@@ -129,6 +162,7 @@ struct st_NDI_on_SRT_header
             ifsr(data, header.reserved[i], pos);
         }
         ifsr(data, header.ndi_data_size, pos);
+        ifsr(data, header.check_sum, pos);
 
         return header;
     }
@@ -250,6 +284,8 @@ public:
                     header.frame_count = frame_count; frame_count++;
                     memset(header.reserved, 0, std::size(header.reserved));
                     header.ndi_data_size = data.size();
+                    uint64_t cs = calc_checksum(data);
+                    header.check_sum = cs;
 
                     // update index.
                     idx_out = idx_in;
@@ -414,6 +450,9 @@ public:
 
         bool is_header = (memcmp(vec.data(), st_NDI_on_SRT_header::MARKER, std::size(header.marker)) == 0);
         if (is_header) {
+            if (write_stat != em_WRITE_STATE::NONE) {
+                std::cerr << "======== RESET!! NDI send state to 'RECEIVE_HEADER'. ======== stat = " << (int)write_stat << std::endl;
+            }
             write_stat = em_WRITE_STATE::RECEIVE_HEADER;
         }
 
@@ -451,28 +490,33 @@ public:
                 {
                     size_t pos = 0;
                     auto &data = ndi_data[idx_out];
-                    ifsr(data, video_frame.xres, pos);
-                    ifsr(data, video_frame.yres, pos);
-                    ifsr(data, video_frame.FourCC, pos);
-                    ifsr(data, video_frame.frame_rate_N, pos);
-                    ifsr(data, video_frame.frame_rate_D, pos);
-                    ifsr(data, video_frame.picture_aspect_ratio, pos);
-                    ifsr(data, video_frame.frame_format_type, pos);
-                    ifsr(data, video_frame.timecode, pos);
-                    ifsr(data, video_frame.data_size_in_bytes, pos);
-                    ifsr(data, video_frame.timestamp, pos);
+                    uint64_t cs = calc_checksum(data);
+                    if (cs == header.check_sum) {
+                        ifsr(data, video_frame.xres, pos);
+                        ifsr(data, video_frame.yres, pos);
+                        ifsr(data, video_frame.FourCC, pos);
+                        ifsr(data, video_frame.frame_rate_N, pos);
+                        ifsr(data, video_frame.frame_rate_D, pos);
+                        ifsr(data, video_frame.picture_aspect_ratio, pos);
+                        ifsr(data, video_frame.frame_format_type, pos);
+                        ifsr(data, video_frame.timecode, pos);
+                        ifsr(data, video_frame.data_size_in_bytes, pos);
+                        ifsr(data, video_frame.timestamp, pos);
 
-                    // copy metadata.
-                    metadata[idx_out] = std::string((char *)&data[pos]);
-                    pos += (metadata[idx_out].length() + 1);
-                    video_frame.p_metadata = metadata[idx_out].data();
+                        // copy metadata.
+                        metadata[idx_out] = std::string((char *)&data[pos]);
+                        pos += (metadata[idx_out].length() + 1);
+                        video_frame.p_metadata = metadata[idx_out].data();
 
-                    // copy data.
-                    video_frame.p_data = &data[pos];
-                    pos += video_frame.data_size_in_bytes;
+                        // copy data.
+                        video_frame.p_data = &data[pos];
+                        pos += video_frame.data_size_in_bytes;
 
-                    // send.
-                    NDIlib_send_send_video_async_v2(pNDI_send, &video_frame);
+                        // send.
+                        NDIlib_send_send_video_async_v2(pNDI_send, &video_frame);
+                    } else {
+                        std::cerr << "CHECK SUM: " << cs << " : " << header.check_sum << " : " << std::boolalpha << (cs == header.check_sum) << std::endl;
+                    }
                 }
                 break;
 

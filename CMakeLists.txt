@@ -1096,6 +1096,12 @@ macro(srt_add_program name)
 	install(TARGETS ${name} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endmacro()
 
+# use Crypto++.
+set(CRYPTOPP "NO")
+if(CRYPTOPP)
+	add_definitions(-DCHECK_SUM_MODE_CRC32)
+endif()
+
 macro(srt_make_application name)
 
 	srt_set_stdcxx(${name} "${USE_CXX_STD_APP}")
@@ -1130,6 +1136,11 @@ macro(srt_make_application name)
 
 	# NDI SDK.
 	target_link_libraries(${name} ndi)
+
+	# Crypto++.
+	if(CRYPTOPP)
+		target_link_libraries(${name} cryptopp)
+	endif()
 endmacro()
 
 macro(srt_add_application name) # ARGN=sources...
@@ -1170,6 +1181,11 @@ if (ENABLE_APPS)
 
 	# NDI SDK.
 	include_directories(/usr/local/include/NDI)
+
+	# Crypto++.
+	if(CRYPTOPP)
+		include_directories(/usr/local/include/cryptopp)
+	endif()
 
 	srt_add_application(srt-live-transmit ${VIRTUAL_srtsupport})
 	if (DEFINED EXTRA_stransmit)
