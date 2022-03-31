@@ -191,3 +191,20 @@ Receive(Listener)
 ```bash
 srt-live-transmit srt://:<port number>?passphrase='hoge hoge words' ndi:///NDI_SOURCE_NAME2 -v
 ```
+
+#### **Case 3: Send(Caller) --> Relay(listener:listener) --> Receive(Caller)**
+Send(Caller)
+```bash
+# MACHINE_NAME (NDI_SOURCE_NAME)
+srt-live-transmit ndi://MACHINE_NAME/NDI_SOURCE_NAME srt://<IP address of Relay(listener)>:<port number 1>?passphrase='hoge hoge words' -v
+```
+
+Relay(Listener:Listener)
+```bash
+srt-live-transmit srt://:<port number 1>?passphrase='hoge hoge words' srt://:<port number 2>?passphrase='fuga fuga words' -v
+```
+
+Receive(Caller)
+```bash
+srt-live-transmit srt://<IP address of Relay(listener)>:<port number 2>?passphrase='fuga fuga words' ndi:///NDI_SOURCE_NAME2 -v
+```
